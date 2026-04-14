@@ -73,12 +73,17 @@ langgraph dev --port 2025
 
 To run the same graph on LangSmith Deployment, connect this repo per the [LangSmith deployment docs](https://docs.smith.langchain.com/deployment) (Git integration or CLI). The `langgraph.json` graph id **`travel_planner`** is the assistant id you invoke from the SDK or UI.
 
+## Web UI (React + Tailwind)
+
+A chat-style front-end is in **`web/`**. It reads **`DEPLOYMENT_URL`** and **`LANGSMITH_API_KEY`** from the repo **`.env`** through a local API proxy so secrets stay off the browser. See **`web/README.md`** for install and run instructions.
+
 ## Scripts in this repo
 
 | Script | Purpose |
 |--------|--------|
 | `python test_local.py` | Runs the graph in-process with `MemorySaver` to exercise streaming, interrupt, and `Command(resume=...)` without deployment. |
 | `python test_deployed.py` | Same flow against a live deployment URL (`DEPLOYMENT_URL` + `LANGSMITH_API_KEY` in `.env`). |
+| `cd web && npm run dev` | Chat UI at http://127.0.0.1:5173 (proxies `/api` to the local Express server). |
 
 ## Project layout
 
@@ -86,6 +91,8 @@ To run the same graph on LangSmith Deployment, connect this repo per the [LangSm
 agent/graph.py    # State schemas, nodes, StateGraph builder, compiled `graph`
 langgraph.json    # Dependencies, graph id → graph path, `.env` path
 requirements.txt  # Python dependencies
+web/              # React + Vite + Tailwind UI and Express proxy
+img/              # Branding assets (also copied under web/public/branding)
 ```
 
 ## License

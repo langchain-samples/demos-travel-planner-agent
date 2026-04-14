@@ -213,9 +213,9 @@ def collect_trip_details_hitl(state: TravelState) -> dict[str, Any]:
     """
     user_reply = interrupt(
         "Where do you want to go, and when?\n\n"
-        "Reply in one message with:\n"
-        "• Your **destination** (city / region / country)\n"
-        "• **Start date** and **end date** (calendar dates; YYYY-MM-DD is ideal)\n\n"
+        "Reply in one message with:\n\n"
+        "- Your **destination** (city / region / country)\n"
+        "- **Start date** and **end date** (calendar dates; YYYY-MM-DD is ideal)\n\n"
         "Example: \"Kyoto, Japan — June 10 through June 17, 2025\""
     )
     parsed = _parse_trip_details_from_text(str(user_reply))
