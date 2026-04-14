@@ -6,17 +6,23 @@ It is not a production travel product; it is a **reference pattern** you can cop
 
 ## What the agent does
 
-The graph `travel_planner` (see `langgraph.json`) runs five top-level steps:
+The graph `travel_planner` (see `langgraph.json`) starts with **where & when** and **inferred origin** in **parallel**, then continues sequentially:
 
-1. **`user_location_subagent`** — A **nested LangGraph** (subagent) that:
-   - Infers where the traveler is starting from: optional **`origin_city`** in input, otherwise **GeoIP** (via [ipapi.co](https://ipapi.co)); then geocodes the **destination** with [Nominatim](https://nominatim.org).
-   - Computes **great-circle distance** and asks Claude for a **high-level** travel brief (flights, rail when relevant, driving in rough terms like “about an hour away” — **no turn-by-turn** directions).
-2. **`research_weather`** — Tavily search + Claude summarize expected weather for the trip window.
-3. **`ask_preferences`** — **`interrupt()`**: execution pauses and surfaces a string prompt (including the travel-leg summary); the run resumes when the user supplies preferences (Studio or SDK `Command(resume=...)`).
-4. **`research_attractions`** — Tavily search for activities aligned with location and preferences.
-5. **`assemble_agenda`** — Claude produces a day-by-day itinerary, respecting the travel-leg summary on day one.
+1. **Parallel (from `__start__`)**  
+   - **`ingest_trip_input`** — Normalizes run input into **`location`**, **`start_date`**, **`end_date`** (and optional **`origin_city`**), including Studio label casing / nested `values`.  
+   - **`infer_user_origin_parallel`** — **`origin_city`** or **GeoIP** ([ipapi.co](https://ipapi.co)); reads aliased keys so it does not depend on ingest finishing first.  
+2. **`join_parallel_trip_prep`** — Barrier: both branches must complete before any trip planning continues.  
+3. **`research_weather`** — Tavily + Claude for weather at the destination over the trip window.  
+4. **`ask_preferences`** — **`interrupt()`** for what the traveler enjoys.  
+5. **`travel_leg_geocode_destination`** + **`travel_leg_summarize_options`** — Geocode destination ([Nominatim](https://nominatim.org)), great-circle distance, Claude **high-level** travel modes (air / rail / rough drive times; **no turn-by-turn**).  
+6. **`research_attractions`** — Tavily for activities aligned with preferences.  
+7. **`assemble_agenda`** — Day-by-day itinerary (uses travel-leg summary on day one).
 
-**Input** for a new run: **`location`**, **`start_date`**, **`end_date`**, and optionally **`origin_city`** (recommended in Studio when GeoIP would otherwise reflect the **server** IP, not the end user). Other state fields are filled by the graph. The compiled graph is published **without** a checkpointer so **`langgraph dev`** and LangSmith Deployment can inject their own durable storage.
+**Input** for a new run: **`location`**, **`start_date`**, **`end_date`**, and optionally **`origin_city`**. Other state is filled by the graph. The compiled graph has **no** checkpointer in code so **`langgraph dev`** and LangSmith Deployment inject storage.
+
+### If Studio’s trace looks wrong
+
+Restart **`langgraph dev`**, redeploy, or use a **new thread** after changing `agent/graph.py`. Old checkpoints can reflect an older graph shape.
 
 ## Prerequisites
 
