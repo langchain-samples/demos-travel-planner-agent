@@ -6,14 +6,17 @@ It is not a production travel product; it is a **reference pattern** you can cop
 
 ## What the agent does
 
-The graph `travel_planner` (see `langgraph.json`) runs four steps:
+The graph `travel_planner` (see `langgraph.json`) runs five top-level steps:
 
-1. **`research_weather`** — Tavily search + Claude summarize expected weather for the trip window.
-2. **`ask_preferences`** — **`interrupt()`**: execution pauses and surfaces a string prompt; the run resumes when the user supplies preferences (Studio or SDK `Command(resume=...)`).
-3. **`research_attractions`** — Tavily search for activities aligned with location and preferences.
-4. **`assemble_agenda`** — Claude produces a day-by-day itinerary.
+1. **`user_location_subagent`** — A **nested LangGraph** (subagent) that:
+   - Infers where the traveler is starting from: optional **`origin_city`** in input, otherwise **GeoIP** (via [ipapi.co](https://ipapi.co)); then geocodes the **destination** with [Nominatim](https://nominatim.org).
+   - Computes **great-circle distance** and asks Claude for a **high-level** travel brief (flights, rail when relevant, driving in rough terms like “about an hour away” — **no turn-by-turn** directions).
+2. **`research_weather`** — Tavily search + Claude summarize expected weather for the trip window.
+3. **`ask_preferences`** — **`interrupt()`**: execution pauses and surfaces a string prompt (including the travel-leg summary); the run resumes when the user supplies preferences (Studio or SDK `Command(resume=...)`).
+4. **`research_attractions`** — Tavily search for activities aligned with location and preferences.
+5. **`assemble_agenda`** — Claude produces a day-by-day itinerary, respecting the travel-leg summary on day one.
 
-Input for a new run is **`location`**, **`start_date`**, and **`end_date`** only. Other state fields are filled by the graph. The compiled graph is published **without** a checkpointer so **`langgraph dev`** and LangSmith Deployment can inject their own durable storage.
+**Input** for a new run: **`location`**, **`start_date`**, **`end_date`**, and optionally **`origin_city`** (recommended in Studio when GeoIP would otherwise reflect the **server** IP, not the end user). Other state fields are filled by the graph. The compiled graph is published **without** a checkpointer so **`langgraph dev`** and LangSmith Deployment can inject their own durable storage.
 
 ## Prerequisites
 

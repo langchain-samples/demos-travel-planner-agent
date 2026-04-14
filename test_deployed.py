@@ -61,13 +61,17 @@ async def run():
     interrupted = False
     interrupt_payload = None
 
+    location = input("Enter the location: ").strip()
+    start_date = input("Enter the start date: ").strip()
+    end_date = input("Enter the end date: ").strip()
+
     async for chunk in client.runs.stream(
         thread_id,
         "travel_planner",       # Must match the key in langgraph.json
         input={
-            "location": "Tokyo, Japan",
-            "start_date": "2025-06-10",
-            "end_date": "2025-06-17",
+            "location": location or "Tokyo, Japan",
+            "start_date": start_date or "2025-06-10",
+            "end_date": end_date or "2025-06-17",
         },
         stream_mode="updates",
     ):
