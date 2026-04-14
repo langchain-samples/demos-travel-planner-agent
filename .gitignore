@@ -60,3 +60,8 @@ Thumbs.db
 
 # LangGraph / local tooling (if generated)
 .langgraph_api/
+
+# Web frontend
+web/node_modules/
+web/dist/
+web/.vite/

@@ -4,15 +4,9 @@ Deployed test script — runs against a live LangSmith Deployment.
 This shows how to interact with the agent via the LangGraph SDK once it's
 deployed to LangSmith Cloud (or any self-hosted deployment).
 
-The flow is the same as test_local.py, but state lives on the server and
-we communicate via HTTP using the SDK instead of calling the graph directly.
-
-Setup:
-    1. Deploy the agent: push to GitHub and connect in LangSmith UI
-       OR run: langgraph deploy (requires Docker)
-    2. Copy your deployment URL from the LangSmith Deployments view
-    3. Set environment variables (see below) and run:
-       python test_deployed.py
+The graph accepts **empty** initial input: the first interrupt collects
+destination and dates. If GeoIP fails, the next asks for departure location;
+then preferences are collected after weather.
 
 Environment variables needed:
     DEPLOYMENT_URL      — e.g. https://travel-planner-abc123.langsmith.com
@@ -27,6 +21,12 @@ from dotenv import load_dotenv
 from langgraph_sdk import get_client
 
 load_dotenv()
+
+
+def _is_origin_followup_prompt(payload) -> bool:
+    t = str(payload or "").lower()
+    return "couldn't automatically" in t or "departing from" in t
+
 
 DEPLOYMENT_URL = os.environ.get("DEPLOYMENT_URL")
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY")
@@ -46,84 +46,118 @@ async def run():
     print("=" * 55)
     print()
 
-    # ── Create a thread ────────────────────────────────────────────────────────
-    # A thread is the server-side equivalent of a thread_id + checkpointer.
-    # All runs on the same thread share state — this is what makes HITL possible.
-    # The thread persists on the server, so you can resume hours later.
     thread = await client.threads.create()
     thread_id = thread["thread_id"]
     print(f"  Thread created: {thread_id}\n")
 
-    # ── Phase 1: Initial run ───────────────────────────────────────────────────
+    async def stream_until_interrupt(thread_id_: str, inp: dict | None, command: dict | None):
+        interrupted = False
+        payload = None
+        kwargs: dict = {
+            "thread_id": thread_id_,
+            "assistant_id": "travel_planner",
+            "stream_mode": "updates",
+        }
+        if command is not None:
+            kwargs["command"] = command
+        else:
+            kwargs["input"] = inp if inp is not None else {}
 
-    print("Starting agent...\n")
+        async for chunk in client.runs.stream(**kwargs):
+            if chunk.event != "updates":
+                continue
+            if "__interrupt__" in chunk.data:
+                intr = chunk.data["__interrupt__"][0]
+                payload = intr["value"] if isinstance(intr, dict) else intr.value
+                interrupted = True
+                break
+            node_name = list(chunk.data.keys())[0]
+            print(f"  + {node_name}")
+        return payload, interrupted
 
-    interrupted = False
-    interrupt_payload = None
+    # ── Phase 1: empty input — first interrupt (trip details) ───────────────────
 
-    async for chunk in client.runs.stream(
-        thread_id,
-        "travel_planner",       # Must match the key in langgraph.json
-        input={
-            "location": "Tokyo, Japan",
-            "start_date": "2025-06-10",
-            "end_date": "2025-06-17",
-        },
-        stream_mode="updates",
-    ):
-        if chunk.event != "updates":
-            continue
+    print("Starting agent (first HITL = trip details)...\n")
 
-        if "__interrupt__" in chunk.data:
-            interrupted = True
-            interrupt_payload = chunk.data["__interrupt__"][0]["value"]
-            break
-
-        node_name = list(chunk.data.keys())[0]
-        print(f"  ✓ {node_name}")
-
+    payload, interrupted = await stream_until_interrupt(thread_id, {}, None)
     if not interrupted:
         await _print_final_agenda(client, thread_id)
         return
 
-    # ── Phase 2: Human-in-the-loop ─────────────────────────────────────────────
-
     print()
     print("─" * 55)
-    print("  Agent paused — waiting for your input")
+    print("  Trip details (first interrupt)")
     print("─" * 55)
     print()
-    print(f"  {interrupt_payload}")
+    print(f"  {payload}")
     print()
 
-    user_preferences = input("  Your preferences: ").strip()
-    if not user_preferences:
-        user_preferences = "Mix of culture, local food, and some outdoor walks"
+    trip_reply = input("  Your answer: ").strip()
+    if not trip_reply:
+        trip_reply = "Tokyo, Japan — June 10 through June 17, 2025"
 
-    # ── Phase 3: Resume from server-side checkpoint ────────────────────────────
+    # ── Phase 2: resume → weather → second interrupt ────────────────────────────
 
     print()
     print("Resuming...\n")
 
-    # Passing command={"resume": ...} instead of input tells the server to
-    # resume from the checkpoint where the interrupt fired. The user_preferences
-    # string becomes the return value of interrupt() in ask_preferences().
-    async for chunk in client.runs.stream(
-        thread_id,
-        "travel_planner",
-        command={"resume": user_preferences},
-        stream_mode="updates",
-    ):
-        if chunk.event == "updates" and "__interrupt__" not in chunk.data:
-            node_name = list(chunk.data.keys())[0]
-            print(f"  ✓ {node_name}")
+    payload, interrupted = await stream_until_interrupt(
+        thread_id, None, {"resume": trip_reply}
+    )
+    if not interrupted:
+        await _print_final_agenda(client, thread_id)
+        return
 
-    # ── Final output ───────────────────────────────────────────────────────────
+    if _is_origin_followup_prompt(payload):
+        print()
+        print("─" * 55)
+        print("  Starting location (GeoIP could not infer)")
+        print("─" * 55)
+        print()
+        print(f"  {payload}")
+        print()
+
+        origin_reply = input("  City/region you're departing from: ").strip()
+        if not origin_reply:
+            origin_reply = "San Francisco, CA"
+
+        print()
+        print("Resuming...\n")
+
+        payload, interrupted = await stream_until_interrupt(
+            thread_id, None, {"resume": origin_reply}
+        )
+        if not interrupted:
+            await _print_final_agenda(client, thread_id)
+            return
+
+    print()
+    print("─" * 55)
+    print("  Preferences (interrupt)")
+    print("─" * 55)
+    print()
+    print(f"  {payload}")
+    print()
+
+    pref_reply = input("  Your preferences: ").strip()
+    if not pref_reply:
+        pref_reply = "Mix of culture, local food, and some outdoor walks"
+
+    # ── Phase 3: resume to completion ───────────────────────────────────────────
+
+    print()
+    print("Resuming...\n")
+
+    _, interrupted = await stream_until_interrupt(
+        thread_id, None, {"resume": pref_reply}
+    )
+    if interrupted:
+        print("  (Unexpected extra interrupt.)")
+
     await _print_final_agenda(client, thread_id)
 
 
 async def _print_final_agenda(client, thread_id: str):
-    """Fetch the completed thread state and print the agenda."""
     state = await client.threads.get_state(thread_id)
     values = state["values"]
 

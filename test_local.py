@@ -9,35 +9,27 @@ Usage:
     cp .env.example .env   # fill in your keys
     python test_local.py
 
-What this demonstrates:
-  - Compiling the graph with MemorySaver for local testing
-  - Streaming updates from each node as they complete
-  - Detecting the HITL interrupt mid-stream
-  - Resuming execution with Command(resume=...) after user input
-  - Reading the final state once the graph completes
+The graph starts with **empty** input: the first interrupt asks for destination
+and dates. If GeoIP cannot infer a starting point, a follow-up asks where you are
+departing from. Then (after weather) preferences are collected.
 """
 
-import os
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 load_dotenv()
 
-# Import the builder (not the pre-compiled graph) so we can attach MemorySaver
 from agent.graph import builder
 
 
+def _is_origin_followup_prompt(payload) -> bool:
+    t = str(payload or "").lower()
+    return "couldn't automatically" in t or "departing from" in t
+
+
 def run():
-    # ── Setup ──────────────────────────────────────────────────────────────────
-
-    # MemorySaver keeps state in memory for the lifetime of this process.
-    # In production (LangSmith Deployment), a PostgreSQL-backed checkpointer
-    # is injected automatically — you don't configure this yourself.
     graph = builder.compile(checkpointer=MemorySaver())
-
-    # thread_id is the persistent cursor that links the initial run to the
-    # resumed run. Reusing the same ID = same checkpoint. New ID = fresh start.
     config = {"configurable": {"thread_id": "tokyo-trip-test-1"}}
 
     print("=" * 55)
@@ -45,71 +37,87 @@ def run():
     print("=" * 55)
     print()
 
-    # ── Phase 1: Initial run (will pause at the HITL interrupt) ────────────────
+    def stream_until_interrupt(inp):
+        """Stream until the next interrupt or graph completion."""
+        for chunk in graph.stream(inp, config=config, stream_mode="updates"):
+            if "__interrupt__" in chunk:
+                return chunk["__interrupt__"][0].value, True
+            node_name = list(chunk.keys())[0]
+            print(f"  + {node_name}")
+        return None, False
 
-    print("Starting agent...\n")
+    # ── Phase 1: start with no trip fields — first interrupt is trip details ────
 
-    interrupted = False
-    interrupt_payload = None
+    print("Starting agent (trip details from first HITL prompt)...\n")
 
-    for chunk in graph.stream(
-        {
-            "location": "Tokyo, Japan",
-            "start_date": "2025-06-10",
-            "end_date": "2025-06-17",
-        },
-        config=config,
-        stream_mode="updates",
-    ):
-        # Each chunk is a dict like {"node_name": {...state updates...}}
-        # When an interrupt fires, the key is "__interrupt__"
-        if "__interrupt__" in chunk:
-            interrupted = True
-            # LangGraph streams Interrupt objects (use .value), not dicts with ["value"].
-            interrupt_payload = chunk["__interrupt__"][0].value
-            break
-
-        node_name = list(chunk.keys())[0]
-        print(f"  ✓ {node_name}")
-
+    payload, interrupted = stream_until_interrupt({})
     if not interrupted:
-        # Graph ran all the way through without interrupting (shouldn't happen
-        # in this agent, but handle it cleanly anyway)
         _print_agenda(graph.get_state(config).values)
         return
 
-    # ── Phase 2: Human-in-the-loop ─────────────────────────────────────────────
-
     print()
     print("─" * 55)
-    print("  Agent paused — waiting for your input")
+    print("  Trip details (first interrupt)")
     print("─" * 55)
     print()
-    print(f"  {interrupt_payload}")
+    print(f"  {payload}")
     print()
 
-    user_preferences = input("  Your preferences: ").strip()
-    if not user_preferences:
-        user_preferences = "Mix of culture, local food, and some outdoor walks"
+    trip_reply = input("  Your answer: ").strip()
+    if not trip_reply:
+        trip_reply = "Tokyo, Japan — June 10 through June 17, 2025"
 
-    # ── Phase 3: Resume from checkpoint ───────────────────────────────────────
+    # ── Phase 2: resume → weather → second interrupt (preferences) ─────────────
 
     print()
     print("Resuming...\n")
 
-    # Command(resume=...) is passed instead of new input.
-    # LangGraph loads the saved checkpoint, injects the resume value as the
-    # return of interrupt(), and continues execution from that exact point.
-    for chunk in graph.stream(
-        Command(resume=user_preferences),
-        config=config,
-        stream_mode="updates",
-    ):
-        if "__interrupt__" not in chunk:
-            node_name = list(chunk.keys())[0]
-            print(f"  ✓ {node_name}")
+    payload, interrupted = stream_until_interrupt(Command(resume=trip_reply))
+    if not interrupted:
+        _print_agenda(graph.get_state(config).values)
+        return
 
-    # ── Final output ───────────────────────────────────────────────────────────
+    if _is_origin_followup_prompt(payload):
+        print()
+        print("─" * 55)
+        print("  Starting location (GeoIP could not infer — second interrupt)")
+        print("─" * 55)
+        print()
+        print(f"  {payload}")
+        print()
+
+        origin_reply = input("  City/region you're departing from: ").strip()
+        if not origin_reply:
+            origin_reply = "San Francisco, CA"
+
+        print()
+        print("Resuming...\n")
+
+        payload, interrupted = stream_until_interrupt(Command(resume=origin_reply))
+        if not interrupted:
+            _print_agenda(graph.get_state(config).values)
+            return
+
+    print()
+    print("─" * 55)
+    print("  Preferences (interrupt)")
+    print("─" * 55)
+    print()
+    print(f"  {payload}")
+    print()
+
+    pref_reply = input("  Your preferences: ").strip()
+    if not pref_reply:
+        pref_reply = "Mix of culture, local food, and some outdoor walks"
+
+    # ── Phase 3: resume to completion ───────────────────────────────────────────
+
+    print()
+    print("Resuming...\n")
+
+    _, interrupted = stream_until_interrupt(Command(resume=pref_reply))
+    if interrupted:
+        print("  (Unexpected extra interrupt — check graph.)")
 
     final_state = graph.get_state(config).values
     _print_agenda(final_state)

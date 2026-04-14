@@ -6,14 +6,23 @@ It is not a production travel product; it is a **reference pattern** you can cop
 
 ## What the agent does
 
-The graph `travel_planner` (see `langgraph.json`) runs four steps:
+The graph `travel_planner` (see `langgraph.json`) starts with **where & when** and **inferred origin** in **parallel**, then continues sequentially:
 
-1. **`research_weather`** — Tavily search + Claude summarize expected weather for the trip window.
-2. **`ask_preferences`** — **`interrupt()`**: execution pauses and surfaces a string prompt; the run resumes when the user supplies preferences (Studio or SDK `Command(resume=...)`).
-3. **`research_attractions`** — Tavily search for activities aligned with location and preferences.
-4. **`assemble_agenda`** — Claude produces a day-by-day itinerary.
+1. **Parallel (from `__start__`)**  
+   - **`ingest_trip_input`** — Normalizes run input into **`location`**, **`start_date`**, **`end_date`** (and optional **`origin_city`**), including Studio label casing / nested `values`.  
+   - **`infer_user_origin_parallel`** — **`origin_city`** or **GeoIP** ([ipapi.co](https://ipapi.co)); reads aliased keys so it does not depend on ingest finishing first.  
+2. **`join_parallel_trip_prep`** — Barrier: both branches must complete before any trip planning continues.  
+3. **`research_weather`** — Tavily + Claude for weather at the destination over the trip window.  
+4. **`ask_preferences`** — **`interrupt()`** for what the traveler enjoys.  
+5. **`travel_leg_geocode_destination`** + **`travel_leg_summarize_options`** — Geocode destination ([Nominatim](https://nominatim.org)), great-circle distance, Claude **high-level** travel modes (air / rail / rough drive times; **no turn-by-turn**).  
+6. **`research_attractions`** — Tavily for activities aligned with preferences.  
+7. **`assemble_agenda`** — Day-by-day itinerary (uses travel-leg summary on day one).
 
-Input for a new run is **`location`**, **`start_date`**, and **`end_date`** only. Other state fields are filled by the graph. The compiled graph is published **without** a checkpointer so **`langgraph dev`** and LangSmith Deployment can inject their own durable storage.
+**Input** for a new run: **`location`**, **`start_date`**, **`end_date`**, and optionally **`origin_city`**. Other state is filled by the graph. The compiled graph has **no** checkpointer in code so **`langgraph dev`** and LangSmith Deployment inject storage.
+
+### If Studio’s trace looks wrong
+
+Restart **`langgraph dev`**, redeploy, or use a **new thread** after changing `agent/graph.py`. Old checkpoints can reflect an older graph shape.
 
 ## Prerequisites
 
@@ -64,12 +73,17 @@ langgraph dev --port 2025
 
 To run the same graph on LangSmith Deployment, connect this repo per the [LangSmith deployment docs](https://docs.smith.langchain.com/deployment) (Git integration or CLI). The `langgraph.json` graph id **`travel_planner`** is the assistant id you invoke from the SDK or UI.
 
+## Web UI (React + Tailwind)
+
+A chat-style front-end is in **`web/`**. It reads **`DEPLOYMENT_URL`** and **`LANGSMITH_API_KEY`** from the repo **`.env`** through a local API proxy so secrets stay off the browser. See **`web/README.md`** for install and run instructions.
+
 ## Scripts in this repo
 
 | Script | Purpose |
 |--------|--------|
 | `python test_local.py` | Runs the graph in-process with `MemorySaver` to exercise streaming, interrupt, and `Command(resume=...)` without deployment. |
 | `python test_deployed.py` | Same flow against a live deployment URL (`DEPLOYMENT_URL` + `LANGSMITH_API_KEY` in `.env`). |
+| `cd web && npm run dev` | Chat UI at http://127.0.0.1:5173 (proxies `/api` to the local Express server). |
 
 ## Project layout
 
@@ -77,6 +91,8 @@ To run the same graph on LangSmith Deployment, connect this repo per the [LangSm
 agent/graph.py    # State schemas, nodes, StateGraph builder, compiled `graph`
 langgraph.json    # Dependencies, graph id → graph path, `.env` path
 requirements.txt  # Python dependencies
+web/              # React + Vite + Tailwind UI and Express proxy
+img/              # Branding assets (also copied under web/public/branding)
 ```
 
 ## License
